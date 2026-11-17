@@ -584,6 +584,74 @@ def test_js_distance_matches_metadata():
     assert 0.0 <= result.value <= 1.0
 
 
+def _token_distribution(text: str) -> dict[str, float]:
+    tokens = text.lower().split()
+    total = float(len(tokens))
+    counts: dict[str, float] = {}
+    for token in tokens:
+        counts[token] = counts.get(token, 0.0) + 1.0
+    return {token: count / total for token, count in counts.items()}
+
+
+def _js_divergence_from_definition(output: str, reference: str, base: float) -> float:
+    """Jensen-Shannon divergence in ``base``, independent of the metric code."""
+
+    def _kl(p_dist: dict[str, float], q_dist: dict[str, float]) -> float:
+        return sum(
+            p_value * math.log(p_value / q_dist[token], base)
+            for token, p_value in p_dist.items()
+            if p_value > 0.0
+        )
+
+    p_dist = _token_distribution(output)
+    q_dist = _token_distribution(reference)
+    vocabulary = set(p_dist) | set(q_dist)
+    midpoint = {
+        token: (p_dist.get(token, 0.0) + q_dist.get(token, 0.0)) / 2.0
+        for token in vocabulary
+    }
+    return 0.5 * (_kl(p_dist, midpoint) + _kl(q_dist, midpoint))
+
+
+@pytest.mark.parametrize("metric_class", [JSDivergence, JSDistance])
+@pytest.mark.parametrize(
+    "base",
+    [float("nan"), float("inf"), float("-inf")],
+    ids=["nan", "inf", "-inf"],
+)
+def test_js_metrics__non_finite_base__raises_value_error(metric_class, base):
+    # NaN is unordered and +inf is greater than 1, so `base <= 1` lets both
+    # through. The similarity clamp then reports perfect agreement.
+    with pytest.raises(ValueError) as exc_info:
+        metric_class(base=base, track=False)
+
+    assert str(exc_info.value) == "base must be greater than 1.0"
+
+
+@pytest.mark.parametrize("metric_class", [JSDivergence, JSDistance])
+@pytest.mark.parametrize("base", [2.0, math.e], ids=["base-2", "base-e"])
+@pytest.mark.parametrize(
+    "output,reference",
+    [
+        ("apple pear", "zebra quokka"),
+        ("cat cat sat", "cat sat on mat"),
+        ("the cat sat", "the cat sat"),
+    ],
+    ids=["disjoint", "partial-overlap", "identical"],
+)
+def test_js_metrics__finite_base_above_one__scores_from_definition(
+    metric_class, base, output, reference
+):
+    metric = metric_class(base=base, track=False)
+    result = metric.score(output=output, reference=reference)
+
+    divergence = _js_divergence_from_definition(output, reference, base)
+    expected = divergence if metric_class is JSDistance else 1.0 - divergence
+    assert result.value == pytest.approx(expected, abs=1e-9)
+    assert result.metadata is not None
+    assert result.metadata["base"] == base
+
+
 def test_kl_divergence_avg_direction():
     metric = KLDivergence(direction="avg", smoothing=1e-6, track=False)
     result = metric.score(output="cat cat", reference="cat dog")

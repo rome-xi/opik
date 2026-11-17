@@ -118,7 +118,9 @@ class JSDivergence(_DistributionMetricBase):
         track: bool = True,
         project_name: Optional[str] = None,
     ) -> None:
-        if base <= 1.0:
+        # NaN is unordered and +inf compares greater than 1, so `base <= 1`
+        # alone accepts both and the similarity clamp reports perfect agreement.
+        if not math.isfinite(base) or base <= 1.0:
             raise ValueError("base must be greater than 1.0")
         super().__init__(
             tokenizer=tokenizer,
